@@ -1,0 +1,4 @@
+title,value,category,timestamp
+Machine A temperature,42.5,temperature,2026-09-23T10:00:00Z
+Machine B temperature,86.2,temperature,2026-09-23T10:00:01Z
+Line 1 throughput,62,throughput,2026-09-23T10:00:02Z
