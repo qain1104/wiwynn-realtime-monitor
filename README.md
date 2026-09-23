@@ -81,6 +81,7 @@ API_URL=http://localhost:8000 streamlit run app.py
 `GET /api/records` 支援 `page`、`size`、`category`、`start`、`end`、`sort=timestamp|value|id`、`order=asc|desc`。時間使用 ISO 8601。匯入欄位是 `title,value,category,timestamp`，範例見 [`sample_data/records.csv`](sample_data/records.csv)。匯入大小最多 2 MB、5000 筆；Excel 最多輸出近期 10000 筆。告警閾值由 `ALERT_THRESHOLD` 設定。
 
 完整架構與資料流說明見 [`docs/architecture.md`](docs/architecture.md)。
+本機功能驗收結果見 [`docs/QA_REPORT.md`](docs/QA_REPORT.md)。
 
 ## 快速驗證
 

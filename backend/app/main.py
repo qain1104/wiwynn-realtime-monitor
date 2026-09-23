@@ -7,8 +7,8 @@ import random
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from typing import Literal
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.exc import IntegrityError
@@ -73,14 +73,32 @@ async def lifespan(app: FastAPI):
             await task
     await engine.dispose()
 
-app = FastAPI(title='Real-time Analytics and Monitoring', lifespan=lifespan)
+tags = [
+    {'name': 'system', 'description': 'Service health checks.'},
+    {'name': 'authentication', 'description': 'Registration, JWT login and current user.'},
+    {'name': 'records', 'description': 'Data record CRUD, filtering and batch import.'},
+    {'name': 'analytics', 'description': 'Aggregations and Excel export.'},
+    {'name': 'administration', 'description': 'Admin-only users, audit logs and database status.'},
+]
+app = FastAPI(
+    title='Real-time Analytics and Monitoring',
+    version='1.0.0',
+    description='REST and WebSocket API for real-time monitoring, historical data and role-based administration.',
+    openapi_tags=tags,
+    lifespan=lifespan,
+)
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    log.exception('Unhandled error on %s %s', request.method, request.url.path)
+    return JSONResponse(status_code=500, content={'detail': 'Internal server error'})
 
 @app.get('/api/health', tags=['system'])
 async def public_health():
     """Lightweight liveness endpoint for containers and load balancers."""
     return {'status': 'ok'}
 
-@app.post('/api/auth/register', response_model=UserOut, status_code=201)
+@app.post('/api/auth/register', response_model=UserOut, status_code=201, tags=['authentication'])
 async def register(payload: Register, db: AsyncSession = Depends(get_db)):
     user = User(email=payload.email.lower(), password_hash=hashing.hash(payload.password), role='viewer')
     db.add(user)
@@ -92,18 +110,18 @@ async def register(payload: Register, db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
     return user
 
-@app.post('/api/auth/login')
+@app.post('/api/auth/login', tags=['authentication'])
 async def login(payload: Login, db: AsyncSession = Depends(get_db)):
     user = await db.scalar(select(User).where(User.email == payload.email.lower()))
     if user is None or not hashing.verify(payload.password, user.password_hash):
         raise HTTPException(401, 'Invalid credentials')
     return {'access_token': token_for(user), 'token_type': 'bearer', 'role': user.role}
 
-@app.get('/api/auth/me', response_model=UserOut)
+@app.get('/api/auth/me', response_model=UserOut, tags=['authentication'], responses={401: {'description': 'Invalid or missing token'}})
 async def me(user: User = Depends(current_user)):
     return user
 
-@app.get('/api/records', response_model=list[RecordOut])
+@app.get('/api/records', response_model=list[RecordOut], tags=['records'], responses={401: {'description': 'Invalid or missing token'}})
 async def list_records(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=500), category: str | None = None, start: datetime | None = None, end: datetime | None = None, sort: Literal['timestamp', 'value', 'id'] = 'timestamp', order: Literal['asc', 'desc'] = 'desc', db: AsyncSession = Depends(get_db), user: User = Depends(current_user)):
     stmt = select(Record)
     if category: stmt = stmt.where(Record.category == category)
@@ -112,7 +130,7 @@ async def list_records(page: int = Query(1, ge=1), size: int = Query(50, ge=1, l
     column = getattr(Record, sort)
     return (await db.scalars(stmt.order_by(asc(column) if order == 'asc' else desc(column)).offset((page-1)*size).limit(size))).all()
 
-@app.post('/api/records', response_model=RecordOut, status_code=201)
+@app.post('/api/records', response_model=RecordOut, status_code=201, tags=['records'], responses={401: {'description': 'Invalid or missing token'}, 403: {'description': 'User or Admin role required'}})
 async def create_record(payload: RecordIn, db: AsyncSession = Depends(get_db), user: User = Depends(require('admin', 'user'))):
     record = Record(**payload.model_dump(exclude_none=True), creator_id=user.id)
     db.add(record)
@@ -122,7 +140,7 @@ async def create_record(payload: RecordIn, db: AsyncSession = Depends(get_db), u
     await db.refresh(record)
     return record
 
-@app.get('/api/records/{record_id}', response_model=RecordOut)
+@app.get('/api/records/{record_id}', response_model=RecordOut, tags=['records'])
 async def get_record(record_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(current_user)):
     record = await db.get(Record, record_id)
     if not record: raise HTTPException(404, 'Record not found')
@@ -134,7 +152,7 @@ async def owned(record_id: int, db: AsyncSession, user: User) -> Record:
     if user.role != 'admin' and record.creator_id != user.id: raise HTTPException(403, 'Creator or admin required')
     return record
 
-@app.patch('/api/records/{record_id}', response_model=RecordOut)
+@app.patch('/api/records/{record_id}', response_model=RecordOut, tags=['records'], responses={403: {'description': 'Creator or Admin required'}})
 async def update_record(record_id: int, payload: RecordUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require('admin', 'user'))):
     record = await owned(record_id, db, user)
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -144,14 +162,14 @@ async def update_record(record_id: int, payload: RecordUpdate, db: AsyncSession 
     await db.refresh(record)
     return record
 
-@app.delete('/api/records/{record_id}', status_code=204)
+@app.delete('/api/records/{record_id}', status_code=204, tags=['records'], responses={403: {'description': 'Creator or Admin required'}})
 async def delete_record(record_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(require('admin', 'user'))):
     record = await owned(record_id, db, user)
     await db.delete(record)
     await audit(db, user, 'delete', f'record {record_id}')
     await db.commit()
 
-@app.post('/api/records/import')
+@app.post('/api/records/import', tags=['records'], responses={403: {'description': 'User or Admin role required'}})
 async def import_records(file: UploadFile = File(...), db: AsyncSession = Depends(get_db), user: User = Depends(require('admin', 'user'))):
     raw = await file.read(2_000_001)
     if len(raw) > 2_000_000: raise HTTPException(413, 'File exceeds 2 MB')
@@ -170,7 +188,7 @@ async def import_records(file: UploadFile = File(...), db: AsyncSession = Depend
     await db.commit()
     return {'imported': len(parsed)}
 
-@app.get('/api/analytics/summary')
+@app.get('/api/analytics/summary', tags=['analytics'])
 async def summary(start: datetime | None = None, end: datetime | None = None, db: AsyncSession = Depends(get_db), user: User = Depends(current_user)):
     stmt = select(Record.category, func.count(Record.id), func.avg(Record.value), func.min(Record.value), func.max(Record.value), func.sum(Record.value)).group_by(Record.category)
     if start: stmt = stmt.where(Record.timestamp >= start)
@@ -183,7 +201,7 @@ async def summary(start: datetime | None = None, end: datetime | None = None, db
     count, total, average, minimum, maximum = (await db.execute(totals)).one()
     return {'count': count, 'total': total or 0, 'average': average, 'min': minimum, 'max': maximum, 'categories': categories}
 
-@app.get('/api/analytics/export')
+@app.get('/api/analytics/export', tags=['analytics'])
 async def export(start: datetime | None = None, end: datetime | None = None, db: AsyncSession = Depends(get_db), user: User = Depends(current_user)):
     stmt = select(Record).order_by(Record.timestamp.desc()).limit(10000)
     if start: stmt = stmt.where(Record.timestamp >= start)
@@ -198,11 +216,11 @@ async def export(start: datetime | None = None, end: datetime | None = None, db:
     output.seek(0)
     return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': 'attachment; filename=records.xlsx'})
 
-@app.get('/api/admin/users', response_model=list[UserOut])
+@app.get('/api/admin/users', response_model=list[UserOut], tags=['administration'], responses={403: {'description': 'Admin role required'}})
 async def users(db: AsyncSession = Depends(get_db), user: User = Depends(require('admin'))):
     return (await db.scalars(select(User).order_by(User.id))).all()
 
-@app.patch('/api/admin/users/{user_id}/role', response_model=UserOut)
+@app.patch('/api/admin/users/{user_id}/role', response_model=UserOut, tags=['administration'], responses={403: {'description': 'Admin role required'}})
 async def change_role(user_id: int, payload: RoleChange, db: AsyncSession = Depends(get_db), actor: User = Depends(require('admin'))):
     user = await db.get(User, user_id)
     if not user: raise HTTPException(404, 'User not found')
@@ -213,12 +231,12 @@ async def change_role(user_id: int, payload: RoleChange, db: AsyncSession = Depe
     await db.refresh(user)
     return user
 
-@app.get('/api/admin/logs')
+@app.get('/api/admin/logs', tags=['administration'], responses={403: {'description': 'Admin role required'}})
 async def logs(db: AsyncSession = Depends(get_db), user: User = Depends(require('admin'))):
     rows = (await db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(200))).all()
     return [{'id': r.id, 'actor_id': r.actor_id, 'action': r.action, 'detail': r.detail, 'timestamp': r.timestamp} for r in rows]
 
-@app.get('/api/admin/health')
+@app.get('/api/admin/health', tags=['administration'], responses={403: {'description': 'Admin role required'}})
 async def health(db: AsyncSession = Depends(get_db), user: User = Depends(require('admin'))):
     count = await db.scalar(select(func.count(Record.id)))
     return {'database': 'connected', 'record_count': count, 'websocket_clients': len(clients)}

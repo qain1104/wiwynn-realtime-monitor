@@ -37,6 +37,12 @@ def test_health(client):
     assert client.get('/api/health').json() == {'status': 'ok'}
 
 
+def test_missing_token_is_unauthorized(client):
+    response = client.get('/api/auth/me')
+    assert response.status_code == 401
+    assert response.headers['www-authenticate'] == 'Bearer'
+
+
 def test_register_login_and_role_protection(client):
     created = client.post('/api/auth/register', json={'email': 'viewer@example.com', 'password': 'viewer-password'})
     assert created.status_code == 201

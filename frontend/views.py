@@ -52,6 +52,7 @@ def realtime_page():
         if frame.empty:
             st.info('等待第一筆即時資料…')
             return
+        frame['timestamp'] = pd.to_datetime(frame['timestamp'])
         latest = frame.iloc[-1]
         c1, c2, c3 = st.columns(3)
         c1.metric('最新數值', latest['value'])
@@ -59,7 +60,7 @@ def realtime_page():
         c3.metric('連線狀態', 'Live')
         if latest['alert']:
             st.error('異常告警：數值超過閾值')
-        st.line_chart(frame.set_index('timestamp')['value'])
+        st.line_chart(frame.set_index('timestamp')['value'], x_label='時間', y_label='數值')
         st.bar_chart(frame.groupby('category')['value'].mean())
 
     monitor()
@@ -113,10 +114,16 @@ def analytics_page():
             st.bar_chart(pd.DataFrame(stats['categories']).set_index('category')['count'])
     records = api_call('GET', '/api/records', params={'start': start, 'size': 500, 'order': 'asc'})
     if records:
-        st.line_chart(pd.DataFrame(records).set_index('timestamp')['value'])
-    response = api_call('GET', '/api/analytics/export', params={'start': start})
-    if response:
-        st.download_button('下載 Excel', response.content, 'records.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        history = pd.DataFrame(records)
+        history['timestamp'] = pd.to_datetime(history['timestamp'])
+        st.line_chart(history.set_index('timestamp')['value'], x_label='時間', y_label='數值')
+    if st.button('準備 Excel 下載'):
+        response = api_call('GET', '/api/analytics/export', params={'start': start})
+        if response:
+            st.session_state.export_bytes = response.content
+            st.session_state.export_days = days
+    if st.session_state.get('export_days') == days and st.session_state.get('export_bytes'):
+        st.download_button('下載 records.xlsx', st.session_state.export_bytes, 'records.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
 def admin_page():
