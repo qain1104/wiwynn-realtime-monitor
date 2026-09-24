@@ -59,7 +59,7 @@ def realtime_page():
         c2.metric('資料分類', latest['category'])
         c3.metric('連線狀態', 'Live')
         if latest['alert']:
-            st.error('異常告警：數值超過閾值')
+            st.error('異常警告：數值超過閾值')
         st.line_chart(frame.set_index('timestamp')['value'], x_label='時間', y_label='數值')
         st.bar_chart(frame.groupby('category')['value'].mean())
 
