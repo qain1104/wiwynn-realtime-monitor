@@ -68,6 +68,8 @@ def realtime_page():
 
 def records_page():
     st.header('資料紀錄')
+    if notice := st.session_state.pop('records_notice', None):
+        st.success(notice)
     category = st.text_input('篩選分類')
     page_number = st.number_input('頁碼', min_value=1, value=1)
     records = api_call('GET', '/api/records', params={'page': page_number, 'size': 50, 'category': category or None})
@@ -76,26 +78,42 @@ def records_page():
     if st.session_state.role not in ('admin', 'user'):
         st.info('Viewer 可查詢資料；新增、匯入與修改需要 User 或 Admin 權限。')
         return
-    with st.form('create'):
+    with st.form('create', clear_on_submit=True):
         title = st.text_input('標題')
         value = st.number_input('數值')
         new_category = st.text_input('分類')
         if st.form_submit_button('新增'):
-            if api_call('POST', '/api/records', json={'title': title, 'value': value, 'category': new_category}):
+            created = api_call('POST', '/api/records', json={'title': title, 'value': value, 'category': new_category})
+            if created:
+                st.session_state.records_notice = f"已新增紀錄 #{created['id']}"
                 st.rerun()
-    upload = st.file_uploader('匯入 CSV 或 JSON', type=['csv', 'json'])
-    if upload and st.button('匯入'):
-        if api_call('POST', '/api/records/import', files={'file': (upload.name, upload.getvalue())}):
-            st.rerun()
+    upload_generation = st.session_state.get('records_upload_generation', 0)
+    upload = st.file_uploader(
+        '匯入 CSV 或 JSON',
+        type=['csv', 'json'],
+        key=f'records_upload_{upload_generation}',
+        help='檔案上限 2 MB，最多 5000 筆。CSV 欄位：title, value, category, timestamp（可省略）。',
+    )
+    if upload:
+        st.caption(f'已選擇 {upload.name}（{upload.size:,} bytes），按「開始匯入」才會寫入資料庫。')
+        if st.button('開始匯入', type='primary'):
+            imported = api_call('POST', '/api/records/import', files={'file': (upload.name, upload.getvalue())})
+            if imported is not None:
+                st.session_state.records_upload_generation = upload_generation + 1
+                st.session_state.records_notice = f"匯入成功：{imported['imported']} 筆資料"
+                st.rerun()
     with st.expander('修改或刪除紀錄'):
         target = st.number_input('紀錄 ID', min_value=1)
         updated_value = st.number_input('新數值', key='updated_value')
         left, right = st.columns(2)
         if left.button('更新數值'):
-            if api_call('PATCH', f'/api/records/{target}', json={'value': updated_value}):
+            updated = api_call('PATCH', f'/api/records/{target}', json={'value': updated_value})
+            if updated:
+                st.session_state.records_notice = f"已更新紀錄 #{target}"
                 st.rerun()
         if right.button('刪除'):
             if api_call('DELETE', f'/api/records/{target}') is not None:
+                st.session_state.records_notice = f"已刪除紀錄 #{target}"
                 st.rerun()
 
 
